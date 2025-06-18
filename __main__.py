@@ -388,7 +388,7 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
                 if obj.angle == angles[i] * 90 and player.collide[i] == obj:
                     obj.bounced, obj.anim = 1, 0
                     if i // 2 == 0:
-                        player.xvel = bounce_func(player.xvel)
+                        player.xvel = bounce_func(player.xvel) * 5
                         # player.xvel = -(player.xvel + 10) * bounce[i]
                     else:
                         player.yvel = bounce_func(player.yvel)
