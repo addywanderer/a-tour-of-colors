@@ -34,6 +34,7 @@ PERCEPTION = 0.7
 SCROLL = [250, 175]  # distance from side of screen to scroll x, y
 RESP_BUFFER = 0.15  # secs before player goes back to start after dying
 BOUNCE_STRENGTH = 1.14  # amount bouncepads bounce
+GOO = 0.3  # amount goo slows player down
 GRAV_COOLDOWN = 30
 # coral = (255, 96, 96)
 # lime = (196, 255, 14)
@@ -111,7 +112,7 @@ def process_levels(level, color):
     pygame.display.update()
 
     def create_object(obj):
-        special_objs = {"bouncepad": Bouncepad, "block": Block}
+        special_objs = {"bouncepad": Bouncepad, "block": Block, "unstable": Unstable}
         return special_objs.get(obj[1], Object)(*obj)
 
     global color_range
@@ -131,7 +132,7 @@ def process_levels(level, color):
 class Player(pygame.sprite.Sprite):
     def __init__(self, start, size) -> None:
         super().__init__()
-        self.image = load_img(join(PATH, "characters", "plus" + ".png"), size, size)
+        self.image = load_img(join(PATH, "characters", CHARACTER + ".png"), size, size)
         self.images = [flip_image([self.image])[0], self.image]
         self.float_rect = [start[0], start[1], size, size]
         self.xvel, self.yvel = 0, 0
@@ -213,7 +214,11 @@ class Player(pygame.sprite.Sprite):
             return obj if collided else None
 
         def has_collided(obj) -> bool:
-            return pygame.sprite.collide_mask(self, obj) and obj.name != "layer"
+            return (
+                pygame.sprite.collide_mask(self, obj)
+                and obj.name != "layer"
+                and not (obj.name == "unstable" and obj.count_to_break <= 0)
+            )
 
         def try_mask(direction) -> bool:
             orig_direction, self.direction = self.direction, direction
@@ -360,11 +365,34 @@ class Bouncepad(Object):
             self.image = self.sprites[-1]
 
 
+class Unstable(Object):
+    def __init__(
+        self, space, path="unstable", angle=0, count_to_break=60, respawn_buffer=120
+    ) -> None:
+        super().__init__(space, "unstable", path, angle)
+        self.count_to_break, self.break_len = count_to_break, count_to_break
+        self.respawn_buffer = respawn_buffer
+
+    def draw(self) -> None:
+        super().draw()
+        break_width = floor(self.count_to_break / self.break_len * (self.rect.w))
+        pygame.draw.rect(
+            wd,
+            (0, 0, 0),
+            [
+                self.rect.x - t_offset[0] + self.rect.w - break_width + 4,
+                self.rect.y - t_offset[1] + 4,
+            ]
+            + [break_width - 8, self.rect.h - 8],
+        )
+
+
 def obj_interaction(player, level_num, level, color, start) -> bool:
     def bounce_func(vel):
         return bounce[i] * (abs(vel)) ** 0.9
 
     keys = pygame.key.get_pressed()
+    goo_jumping, short_jump = False, False
     global gravity, data
     for obj in player.collide:
         if not obj:
@@ -389,15 +417,27 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
                     obj.bounced, obj.anim = 1, 0
                     if i // 2 == 0:
                         player.xvel = bounce_func(player.xvel) * 5
-                        # player.xvel = -(player.xvel + 10) * bounce[i]
                     else:
                         player.yvel = bounce_func(player.yvel)
+        if obj.name == "goo":
+            player.xvel *= 0.05
+            if obj in player.collide[:2]:
+                goo_jumping = True
+            if obj in player.collide[2:]:
+                short_jump = True
+        if obj.name == "unstable":
+            obj.count_to_break -= 1
         if obj.name == "goal" or keys[pygame.K_l]:
-            level_num += 1
+            level_num = (level_num + 1) % len(LEVELS)
             data, level, color = process_levels(LEVELS[level_num - 1], BGCOLOR)
             gravity = data[2]
             player.respawn(data[0])
             break
+    for obj in level:
+        if obj.name == "unstable" and obj.count_to_break <= 0:
+            obj.count_to_break -= 1
+            if obj.count_to_break <= -obj.respawn_buffer:
+                obj.count_to_break = obj.break_len
 
     if keys[pygame.K_r]:
         player.respawn(start)
@@ -411,10 +451,12 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
     elif (keys[pygame.K_RIGHT] or keys[pygame.K_d]) and (not player.collide[1]):
         player.walking = True
         player.xvel = MSPEED if player.xvel >= MSPEED - AGILE else player.xvel + AGILE
-    if (
-        keys[pygame.K_UP] or keys[pygame.K_w] or keys[pygame.K_SPACE]
-    ) and player.fallcount == 0:
+    if (keys[pygame.K_UP] or keys[pygame.K_w] or keys[pygame.K_SPACE]) and (
+        player.fallcount == 0 or goo_jumping
+    ):
         player.yvel = -JUMP * (gravity // abs(gravity))
+        if short_jump:
+            player.yvel *= 0.2
         player.fallcount = 0
     return level_num, data, level, color
 
@@ -435,7 +477,7 @@ def draw(wd, player, objects, color) -> None:
             screen_pos = obj.rect[i] - t_offset[i]
             if not (0 < screen_pos + obj.rect[i + 2] and screen_pos < DIMS[i]):
                 offscreen = True
-        if not offscreen:
+        if (not offscreen) and not (obj.name == "unstable" and obj.count_to_break <= 0):
             obj.draw()
     player.draw()
     pygame.display.update()
