@@ -36,7 +36,7 @@ BGCOLOR = "random"
 CHARACTER = "plus"
 PLAYER_SIZE = 128  # size of player sprite
 
-level_num = 6
+level_num = 1
 
 # x_vel is velocity to the right
 # y_vel is velocity down
@@ -111,7 +111,8 @@ def process_levels(level, color):
             "unstable": Unstable,
             "moving": Moving,
         }
-        return special_objs.get(obj[1], Object)(*obj)
+        obj = special_objs.get(obj[1], Object)(*obj)
+        return obj.wires + [obj] if obj.name == "moving" else [obj]
 
     global color_range
     color_range, looking_for_color = COLORS[0], True
@@ -120,32 +121,30 @@ def process_levels(level, color):
         if color_range != option:
             color_range = option
             looking_for_color = False
-    print(color_range)
-    return (
-        level[0],
-        [create_object(obj) for obj in level[1:]],
-        random_color() if color == "random" else color,
-    )
+    level_with_objs = []
+    for obj in level[1:]:
+        level_with_objs += create_object(obj)
+    return (level[0], level_with_objs, random_color() if color == "random" else color)
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, start, size) -> None:
+    def __init__(self, size) -> None:
         super().__init__()
         self.image = load_img(join(PATH, "characters", CHARACTER + ".png"), size, size)
         self.images = [flip_image([self.image])[0], self.image]
-        self.float_rect = [start[0], start[1], size, size]
+        self.float_rect = [data[0][0], data[0][1], size, size]
         self.xvel, self.yvel = 0, 0
         self.stationary_xvel, self.stationary_yvel = 0, 0
-        # how fast the player is moving when not using controls (moving block)
         self.mask, self.direction, self.walking = None, 1, False
         self.fallcount = 0
         self.gravity_switch, self.friction = 0, FRICTION
+        self.mspeed, self.agile, self.stop = MSPEED, AGILE, STOP
         self.hit_count, self.loaded = 0, 0
         self.size = size
         self.collide = [None] * 4
         self.last_block_on = None
         self.update_sprite()
-        self.respawn(start)
+        self.respawn(data[0])
 
     def update_sprite(self) -> None:
         self.direction = int(self.direction)
@@ -163,20 +162,18 @@ class Player(pygame.sprite.Sprite):
         wd.blit(self.image, [floor(image_pos[i]) for i in [0, 1]])
 
     def respawn(self, start) -> list[float, float]:
-        global offset, look_offset, t_offset, gravity
-        offset, look_offset = scroll(self, look_offset)
+        global gravity
         self.float_rect[0], self.float_rect[1] = start
-        t_offset = [offset[i] + look_offset[i] for i in [0, 1]]
         self.collide, self.fallcount = [None] * 4, 1
         gravity = data[2]
         self.last_block_on = None
         self.xvel, self.yvel = 0, 0
         self.update()
 
-    def loop(self, fps, objects, data) -> list[float, float]:
+    def loop(self) -> list[float, float]:
         self.adjust_speed()
-        self.collision(objects)
-        self.end_collision(objects)
+        self.collision()
+        self.end_collision()
         self.update_sprite()
 
         if self.gravity_switch > 0:
@@ -184,7 +181,7 @@ class Player(pygame.sprite.Sprite):
 
         if self.hit_count:
             self.hit_count += 1
-        if self.hit_count > fps * RESP_BUFFER:
+        if self.hit_count > FPS * RESP_BUFFER:
             self.hit_count = 0
             self.respawn(data[0])
         elif not (data[1][0] <= self.float_rect[1] <= data[1][1]):
@@ -194,7 +191,7 @@ class Player(pygame.sprite.Sprite):
         if not self.walking:
             if self.xvel != 0:
                 self.xvel *= self.friction
-            if -STOP <= self.xvel <= STOP:
+            if -self.stop <= self.xvel <= self.stop:
                 self.xvel = 0
         self.walking = False
 
@@ -224,12 +221,12 @@ class Player(pygame.sprite.Sprite):
             and not (obj.name == "unstable" and obj.count_to_break <= 0)
         )
 
-    def collision(self, objects) -> None:
+    def collision(self) -> None:
         axes = [[-1, 0], [1, 0], [0, -1], [0, 1]]
         for i, axis in enumerate(axes):
             if self.collide[i]:
                 self.collide[i] = next(
-                    (obj for obj in objects if self.try_direction(axis, obj)), None
+                    (obj for obj in level if self.try_direction(axis, obj)), None
                 )
         self.xvel += self.stationary_xvel
         self.yvel += self.stationary_yvel
@@ -241,7 +238,7 @@ class Player(pygame.sprite.Sprite):
         direction = [abs(i) / i if i else 0 for i in [self.xvel, self.yvel]]
         for _ in range(max_speed):
             self.add_incr(increment[0], increment[1])
-            for obj in objects:
+            for obj in level:
                 if not self.has_collided(obj):
                     continue
 
@@ -253,7 +250,7 @@ class Player(pygame.sprite.Sprite):
                 ]  # left, right, top, bottom
                 return None
 
-    def end_collision(self, objects) -> None:
+    def end_collision(self) -> None:
         self.xvel -= self.stationary_xvel
         self.yvel -= self.stationary_yvel
         self.float_rect = [round(self.float_rect[i]) for i in range(4)]
@@ -268,7 +265,7 @@ class Player(pygame.sprite.Sprite):
         if (self.collide[2] and gravity < 0) or (self.collide[3] and gravity > 0):
             self.fallcount = 0
         if self.xvel != 0:
-            self.try_mask(abs(self.xvel) // self.xvel, objects)
+            self.try_mask(abs(self.xvel) // self.xvel, level)
 
     def try_mask(self, direction, objects) -> bool:
         orig_direction, self.direction = self.direction, direction
@@ -375,7 +372,7 @@ class Unstable(Object):
 
 class Moving(Object):
     def __init__(
-        self, space, path="moving", _=0, move_axis=0, move_range=10 * 64, speed=3
+        self, space, path="moving", _=0, move_axis=0, move_range=10 * 64, speed=4
     ):
         self.angle = move_axis * 90
         super().__init__(space, "moving", path, self.angle)
@@ -388,26 +385,24 @@ class Moving(Object):
             for i in range((move_range // 64) + 1)
         ]
         self.anim, self.count, self.anim_delay = 0, 0, 1
+        self.change_direction = 0
         self.start_pos = [space[0], space[1]]
         self.move_axis = move_axis  # 0 for x, 1 for y
         self.move_range = move_range
         self.speed = speed
 
-    def draw(self):
-        for wire in self.wires:
-            wire.draw()
-        super().draw()
-
     def loop(self, player):
         self.rect[self.move_axis] += self.speed
-        change_direction = False
-        if (
+        self.change_direction %= 2
+        condition = (
             not self.start_pos[self.move_axis]
             <= self.rect[self.move_axis]
             <= self.start_pos[self.move_axis] + self.move_range
-        ):
+        )
+        if condition:
             self.speed *= -1
-            change_direction = True
+        if condition or self.change_direction:
+            self.change_direction += 1
         self.count = (self.count - abs(self.speed) // self.speed) % (
             self.anim_delay * len(self.sprites)
         )
@@ -415,36 +410,50 @@ class Moving(Object):
         self.image = self.sprites[self.anim]
         self.update_mask()
 
-        if change_direction:
+        if self.change_direction:
             return None
 
-        colliding = pygame.sprite.collide_mask(self, player)
+        colliding = pygame.sprite.collide_mask(player, self)
+        move_direction = abs(self.speed) // self.speed
+        axis = self.move_axis == 1
         while colliding:
-            move_direction = abs(self.speed) // self.speed
-            if self.move_axis == 0:
-                player.float_rect[0] += move_direction
-            elif self.move_axis == 1:
-                player.float_rect[1] += move_direction
-            player.update_sprite()
-            colliding = pygame.sprite.collide_mask(self, player)
+            colliding = pygame.sprite.collide_mask(player, self)
+            player.float_rect[axis] += move_direction
+            player.update()
 
 
-def obj_interaction(player, level_num, level, color, start) -> bool:
+def obj_loop() -> None:
+    for obj in level:
+        if obj.name == "unstable" and obj.count_to_break <= 0:
+            obj.count_to_break -= 1
+            if obj.count_to_break <= -obj.respawn_buffer:
+                obj.count_to_break = obj.break_len
+        if obj.name in ["moving", "bouncepad"]:
+            obj.loop(player)
+
+
+def obj_interaction() -> bool:
     def bounce_func(vel):
         return bounce[i] * (abs(vel)) ** 0.9
 
-    # print(player.collide)
-    global gravity, data
+    global gravity, data, level, level_num, color
     keys = pygame.key.get_pressed()
     short_jump = False
     player.friction = FRICTION
+    last = player.last_block_on
+
     if data[2] > 0:
         if player.collide[3]:
-            player.last_block_on = player.collide[3]
+            last = player.collide[3]
     else:
         if player.collide[2]:
-            player.last_block_on = player.collide[2]
-    if not (player.last_block_on and player.last_block_on in player.collide):
+            last = player.collide[2]
+    if not (
+        last
+        and last.name == "moving"
+        and not last.change_direction
+        and last in player.collide
+    ):
         player.stationary_xvel, player.stationary_yvel = 0, 0
 
     # Respawn player if colliding with the same object in at least 3 directions (and is stuck inside)
@@ -452,9 +461,9 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
     if non_none_objs:
         obj_counts = Counter(non_none_objs)
         _, count = obj_counts.most_common(1)[0]
-        if count >= 3:
-            player.respawn(start)
-            return level_num, data, level, color
+        if count >= 3 and not (_.name == "moving" and _.change_direction):
+            player.respawn(data[0])
+            return None
 
     for obj in player.collide:
         if not obj:
@@ -488,6 +497,9 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
             obj.count_to_break -= 1
         if obj.name == "ice":
             player.friction = 0.99
+            player.mspeed = MSPEED * 1.5
+            player.agile = AGILE * 0.5
+            player.stop = STOP * 0.5
         if obj.name == "moving":
             if obj.move_axis == 0:
                 player.stationary_xvel = obj.speed
@@ -499,26 +511,24 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
             gravity = data[2]
             player.respawn(data[0])
             break
-    for obj in level:
-        if obj.name == "unstable" and obj.count_to_break <= 0:
-            obj.count_to_break -= 1
-            if obj.count_to_break <= -obj.respawn_buffer:
-                obj.count_to_break = obj.break_len
-        if obj.name in ["moving", "bouncepad"]:
-            obj.loop(player)
 
+    m_agile = player.mspeed - player.agile
     if keys[pygame.K_r]:
-        player.respawn(start)
+        player.respawn(data[0])
     if keys[pygame.K_p]:
         pygame.display.toggle_fullscreen()
         pygame.display.set_icon(pygame.image.load(join(PATH, ICON)))
         pygame.display.update()
     if (keys[pygame.K_LEFT] or keys[pygame.K_a]) and (not player.collide[0]):
         player.walking = True
-        player.xvel = -MSPEED if player.xvel <= AGILE - MSPEED else player.xvel - AGILE
+        player.xvel = (
+            -player.mspeed if -player.xvel >= m_agile else player.xvel - player.agile
+        )
     elif (keys[pygame.K_RIGHT] or keys[pygame.K_d]) and (not player.collide[1]):
         player.walking = True
-        player.xvel = MSPEED if player.xvel >= MSPEED - AGILE else player.xvel + AGILE
+        player.xvel = (
+            player.mspeed if player.xvel >= m_agile else player.xvel + player.agile
+        )
     if (keys[pygame.K_UP] or keys[pygame.K_w] or keys[pygame.K_SPACE]) and (
         player.fallcount == 0
     ):
@@ -526,10 +536,9 @@ def obj_interaction(player, level_num, level, color, start) -> bool:
         if short_jump:
             player.yvel *= 0.2
         player.fallcount = 0
-    return level_num, data, level, color
 
 
-def draw(wd, player, objects, color) -> None:
+def draw() -> None:
     # tile_image = pygame.image.load(join(PATH, "background", TILES[level_num - 1]))
     # tile_dims = tile_image.get_rect()[2:]
     # ranges = [range(DIMS[i] // tile_dims[i] + 10) for i in [0, 1]]
@@ -537,20 +546,23 @@ def draw(wd, player, objects, color) -> None:
     #     [wd.blit(tile_image, (i * tile_dims[0], j * tile_dims[1])) for j in ranges[1]]
     #     for i in ranges[0]
     # ]
-    wd.fill("black")
-    for obj in objects:
-        offscreen = False
+
+    def on_screen():
+        on_screen_dims = 0
         for i in [0, 1]:
             screen_pos = obj.rect[i] - t_offset[i]
-            if not (0 < screen_pos + obj.rect[i + 2] and screen_pos < DIMS[i]):
-                offscreen = True
-        if (not offscreen) and not (obj.name == "unstable" and obj.count_to_break <= 0):
+            on_screen_dims += -obj.rect[i + 2] < screen_pos < DIMS[i]
+        return on_screen_dims == 2
+
+    wd.fill("black")
+    for obj in level:
+        if not (obj.name == "unstable" and obj.count_to_break <= 0) and on_screen():
             obj.draw()
     player.draw()
     pygame.display.update()
 
 
-def title_loop(color):
+def title_loop():
     wd.fill(color)
     wd.blit(
         load_img(join(PATH, "title" + ".png"), 256, 128),
@@ -570,7 +582,8 @@ def title_loop(color):
     pygame.display.update()
 
 
-def scroll(player, look_offset) -> list[float, float]:  # offset amount up, left
+def scroll() -> None:  # offset amount up, left
+    global offset, look_offset, t_offset
     if 0 <= mouse[0] <= WIDTH and 0 <= mouse[1] <= HEIGHT:
         look_offset = [floor((mouse[i] - DIMS[i] // 2) * PERCEPTION) for i in [0, 1]]
     for i in [0, 1]:
@@ -581,46 +594,50 @@ def scroll(player, look_offset) -> list[float, float]:  # offset amount up, left
         conditions = [offset[i] <= border[0], offset[i] >= border[1]]
         for j in [0, 1]:
             offset[i] = border[j] if conditions[j] else offset[i]
-    return offset, look_offset
+    t_offset = [offset[i] + look_offset[i] for i in [0, 1]]
 
 
-def main(wd, level_num) -> None:
+def loop_color():
+    global clock, mouse, tick, color
+    clock.tick(FPS)
+    tick += 1
+    mouse = pygame.mouse.get_pos()
+    if tick % 600 == 0:
+        tick, color = 0, random_color()
+
+
+def main() -> None:
     print("\n --- RUNNING --- \n")
-    global offset, look_offset, t_offset, mouse, gravity, gamestate, data, level
+    global offset, look_offset, t_offset, mouse, gravity, gamestate, data, level, player
+    global level_num, color, clock, tick
     data, level, color = process_levels(LEVELS[level_num - 1], BGCOLOR)
-    clock = pygame.time.Clock()
+    clock, tick = pygame.time.Clock(), 0
     mouse = pygame.mouse.get_pos()
     gamestate = "title"
     gravity = data[2]
     offset, look_offset = [0, 0], [0, 0]
-    player = Player(data[0], PLAYER_SIZE)
+    player = Player(PLAYER_SIZE)
 
     run = True
-    tick = 0
     while run:
-        clock.tick(FPS)
-        tick += 1
-        mouse = pygame.mouse.get_pos()
-        if tick % 600 == 0:
-            tick, color = 0, random_color()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
                 break
+
+        loop_color()
         if gamestate == "play":
-            offset, look_offset = scroll(player, look_offset)
-            t_offset = [offset[i] + look_offset[i] for i in [0, 1]]
-            level_num, data, level, color = obj_interaction(
-                player, level_num, level, color, data[0]
-            )
-            player.loop(FPS, level, data)
-            draw(wd, player, level, color)
+            scroll()
+            obj_loop()
+            player.loop()
+            obj_interaction()
+            draw()
         elif gamestate == "title":
-            title_loop(color)
+            title_loop()
 
     print("\n --- QUITTING --- \n")
     pygame.quit()
 
 
 if __name__ == "__main__":
-    main(wd, level_num)
+    main()
