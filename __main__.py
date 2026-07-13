@@ -1,7 +1,7 @@
 import pygame
 from level import LEVELS, DEFAULT_BLOCK_HEALTH
 from colors import COLORS
-from guns import GUN_STATS
+from guns import GUN_STATS, BULLET_RADII
 from os import listdir
 from os.path import isfile, join
 from random import randint
@@ -19,7 +19,7 @@ HEIGHT = 800
 DIMS = [WIDTH, HEIGHT]
 FPS = 60
 
-MSPEED = 15  # max ground speed
+MSPEED = 13  # max ground speed
 AGILE = 4  # ability to change direction
 JUMP = 20
 FRICTION = 0.5
@@ -43,7 +43,7 @@ SEARCH_OFFSETS.sort(key=lambda t: (t[0] * t[0] + t[1] * t[1], abs(t[0]) + abs(t[
 # lime = (196, 255, 14)
 BGCOLOR = "random"
 
-CHARACTER = "plus"
+CHARACTER = "troll"
 PLAYER_SIZE = 32  # size of player sprite
 
 # Toolbar / UI for equipping guns and blocks
@@ -61,7 +61,7 @@ BLOCK_PLACEMENT_OPTIONS = [
 ]
 # currently selected tools
 
-level_num = 4
+level_num = randint(0, len(LEVELS) - 1)
 
 # x_vel is velocity to the right
 # y_vel is velocity down
@@ -110,6 +110,16 @@ def get_rotated_cached(base_key, base_surf, angle, snap_deg=1):
         surf = pygame.transform.rotate(base_surf, a)
         ROTATED_CACHE[key] = surf
     return surf
+
+
+def circle_rect_collides(center, radius, rect) -> bool:
+    """Check whether a circle intersects a rectangle using the closest point."""
+    cx, cy = center
+    closest_x = min(max(cx, rect.x), rect.right)
+    closest_y = min(max(cy, rect.y), rect.bottom)
+    dx = cx - closest_x
+    dy = cy - closest_y
+    return dx * dx + dy * dy <= radius * radius
 
 
 # ====================================
@@ -308,20 +318,51 @@ def process_levels(level, color):
         }
         # Extract health if present in level entry: [space, name, health] for healthable objects
         obj_name = obj[1]
-        health = obj[2] if len(obj) > 2 and isinstance(obj[2], int) else None
+        path = None
+        angle = 0
+        health = None
+
+        if len(obj) > 2:
+            if obj_name == "block" and isinstance(obj[2], int):
+                health = obj[2]
+            elif obj_name == "bouncepad" and isinstance(obj[2], int):
+                angle = obj[2]
+            elif obj_name == "unstable" and isinstance(obj[2], int):
+                health = obj[2]
+            elif obj_name in ["ice", "sticky", "moving"] and isinstance(obj[2], int):
+                health = obj[2]
+            else:
+                path = obj[2]
+        if len(obj) > 3 and isinstance(obj[3], int):
+            angle = obj[3]
+
         obj_type = special_objs.get(obj_name, Object)
 
-        if health is not None and obj_name == "block":
-            created_obj = obj_type(obj[0], obj[1], health=health)
-        elif health is not None and obj_name == "bouncepad":
-            created_obj = obj_type(obj[0], health=health)
-        elif health is not None and obj_name == "unstable":
-            created_obj = obj_type(obj[0], health=health)
-        elif health is not None and obj_name in ["ice", "sticky", "moving"]:
-            # Special block objects that can have health
+        if obj_name == "block":
+            created_obj = obj_type(
+                obj[0], obj[1], path=path, health=health if health is not None else None
+            )
+        elif obj_name == "bouncepad":
+            created_obj = obj_type(
+                obj[0], path or "bouncepad", angle=angle, health=health
+            )
+        elif obj_name == "unstable":
+            created_obj = obj_type(
+                obj[0],
+                path or "unstable",
+                angle=angle,
+                health=health,
+            )
+        elif obj_name in ["ice", "sticky", "moving"]:
             created_obj = obj_type(obj[0], obj_name, health=health)
+        elif obj_name == "item":
+            created_obj = obj_type(obj[0], obj_name, path or obj_name)
+        elif obj_name == "lock":
+            created_obj = obj_type(obj[0], obj_name, path or obj_name)
         else:
-            created_obj = obj_type(*obj)
+            created_obj = obj_type(
+                obj[0], obj_name, path=path, angle=angle, health=health
+            )
         return (
             created_obj.wires + [created_obj]
             if created_obj.name == "moving"
@@ -336,13 +377,15 @@ def process_levels(level, color):
             color_range = option
             looking_for_color = False
     level_with_objs = []
+    start, bounds, gravity_val = level[0]
+    data = [list(start), list(bounds), gravity_val]
     for obj in level[1:]:
         level_with_objs += create_object(obj)
-    return (level[0], level_with_objs, random_color() if color == "random" else color)
+    return [data, level_with_objs, random_color() if color == "random" else color]
 
 
 class OnScreenObject(pygame.sprite.Sprite):
-    def __init__(self, rect, image=None, float_rect=None) -> None:
+    def __init__(self, rect, image=None, float_rect=None, health=100) -> None:
         super().__init__()
         self.rect = pygame.Rect(rect)
         self.screen_rect = self.rect.copy()
@@ -360,6 +403,28 @@ class OnScreenObject(pygame.sprite.Sprite):
         self.name = None
         self.path = None
         self.dead = False
+        self.health = 100 if health is None else health
+        self.max_health = self.health
+
+    def maybe_die(self) -> None:
+        if self.dead:
+            return
+        if self.health is not None and self.health <= 0:
+            self.dead = True
+            self.handle_death()
+
+    def handle_death(self) -> None:
+        if self.name == "player":
+            player.respawn(data[0])
+            return
+        try:
+            level.remove(self)
+        except Exception:
+            self.dead = True
+        try:
+            onscreen_objects.remove(self)
+        except Exception:
+            pass
 
 
 class Player(OnScreenObject):
@@ -367,6 +432,7 @@ class Player(OnScreenObject):
         super().__init__(
             rect=pygame.Rect(*data[0], size, size),
             float_rect=[*data[0], size, size],
+            health=1,
         )
         self.name = "player"
         self.size = size
@@ -378,6 +444,7 @@ class Player(OnScreenObject):
         self.mspeed, self.agile, self.stop = MSPEED, AGILE, STOP
         self.hit_count = self.loaded = 0
         self.collide, self.last_block_on = [None] * 4, None
+        self.block_spawn_timer = 0.0
         self.angle = 0
         self.bullets = []
         self.toolbar = [
@@ -528,6 +595,16 @@ class Player(OnScreenObject):
         for bullet in self.bullets:
             if not bullet.dead:
                 blit_rotated(bullet.rotated_image, bullet.rect.center)
+                pygame.draw.circle(
+                    wd,
+                    (255, 255, 255),
+                    (
+                        floor(bullet.rect.centerx - t_offset[0]),
+                        floor(bullet.rect.centery - t_offset[1]),
+                    ),
+                    int(bullet.radius),
+                    1,
+                )
         image_pos = [self.float_rect[i] - t_offset[i] for i in [0, 1]]
         wd.blit(self.image, [floor(image_pos[i]) for i in [0, 1]])
         blit_rotated(self.rotated_gun, self.rect.center)
@@ -658,12 +735,15 @@ class Player(OnScreenObject):
 
 class Bullet(OnScreenObject):
     def __init__(self, player, objects, rect, path) -> None:
-        super().__init__(rect=rect)
+        super().__init__(rect=rect, health=1)
         self.angle = player.angle
         self.speed = player.selected[0]["bullet_speed"]
         self.damage = player.selected[0].get("damage", 0)
         self.path = path
+        self.radius = BULLET_RADII.get(path, BULLET_RADII.get("ammo", 8))
         self.dead = False
+        self.health = 1
+        self.max_health = 1
         self.movement = [
             player.aim_dir[0] * self.speed,
             player.aim_dir[1] * self.speed,
@@ -708,22 +788,12 @@ class Bullet(OnScreenObject):
             o for o in level if hasattr(o, "rect") and o.rect.colliderect(self.rect)
         ]
         for object in candidates:
-            if not self.rect.colliderect(object.rect):
+            if not circle_rect_collides(self.rect.center, self.radius, object.rect):
                 continue
-            if getattr(object, "health", None) is not None:
-                try:
-                    object.health -= self.damage
-                except Exception:
-                    object.health = 0
+            if object.health > 0:
+                object.health -= self.damage
                 if object.health <= 0:
-                    try:
-                        level.remove(object)
-                    except Exception:
-                        object.dead = True
-                    try:
-                        onscreen_objects.remove(object)
-                    except Exception:
-                        pass
+                    object.handle_death()
             self.dead = True
             break
 
@@ -738,6 +808,7 @@ class Object(OnScreenObject):
                 float(space[2]),
                 float(space[3]),
             ],
+            health=health if health is not None else 100,
         )
         if isinstance(path, int):
             angle, path = path, name
@@ -826,7 +897,7 @@ class Block(Object):
 
 class Bouncepad(Object):
     def __init__(self, space, path="bouncepad", angle=0, health=None) -> None:
-        super().__init__(space, "bouncepad", health=health)
+        super().__init__(space, "bouncepad", path=path, angle=angle, health=health)
         sprite_sheet = load_sprite_sheets(join(PATH, "objects"), space[2], space[3])
         self.sprites = rotate_image(sprite_sheet[path], angle)
         if health is not None:
@@ -907,7 +978,7 @@ class Moving(Object):
         health=None,
     ):
         self.angle = move_axis * 90
-        super().__init__(space, "moving", path, self.angle)
+        super().__init__(space, "moving", path, self.angle, health=100)
         self.sprite_sheet = load_sprite_sheets(
             join(PATH, "objects"), space[2], space[3]
         )
@@ -957,7 +1028,7 @@ class Moving(Object):
 
 class Item(Object):
     def __init__(self, space, name, path, anim_delay=30):
-        super().__init__(space, name)
+        super().__init__(space, name, health=100)
         self.item_name, self.anim_delay, self.count, self.collected, self.orig_y = (
             path,
             anim_delay,
@@ -977,7 +1048,7 @@ class Item(Object):
 
 class Lock(Object):
     def __init__(self, space, name, key_name):
-        super().__init__(space, name)
+        super().__init__(space, name, health=100)
         self.images = [
             load_img(join(PATH, "objects", p + ".png"), *self.rect.size)
             for p in ["lock_" + key_name[-1], "open_" + key_name[-1]]
@@ -1047,7 +1118,10 @@ class Enemy(Object):
 
 
 def obj_loop() -> None:
-    for obj in level:
+    for obj in list(level):
+        if obj.dead:
+            continue
+        obj.maybe_die()
         if obj.dead:
             continue
         if obj.name in ["moving", "bouncepad", "item", "lock", "unstable", "enemy"]:
@@ -1141,6 +1215,10 @@ def obj_interaction() -> bool:
         player.respawn(data[0])
     if keys[pygame.K_c]:
         player.inventory = []
+    if player.block_spawn_timer > 0:
+        player.block_spawn_timer = max(
+            0.0, player.block_spawn_timer - clock.get_time() / 1000.0
+        )
     if pygame.mouse.get_pressed(num_buttons=3)[2]:
         block_data = player.selected[1]
         if isinstance(block_data, tuple):
@@ -1148,25 +1226,30 @@ def obj_interaction() -> bool:
         else:
             block_choice, block_health = block_data, 100
         block_size = block_choice if isinstance(block_choice, int) else PLAYER_SIZE
-        pos = resolve_block_placement(mouse, block_size=block_size)
-        if pos:
-            if isinstance(block_choice, int):
-                level.append(
-                    Block((*pos, block_size, block_size), "block", health=block_health)
-                )
-            elif block_choice == "bouncepad":
-                level.append(
-                    Bouncepad((*pos, block_size, block_size), health=block_health)
-                )
-            elif block_choice == "unstable":
-                level.append(
-                    Unstable((*pos, block_size, block_size), health=block_health)
-                )
-            else:
-                obj = Object((*pos, block_size, block_size), block_choice)
-                if hasattr(obj, "health"):
-                    obj.health = block_health
-                level.append(obj)
+        interval = 1.0 * (block_size * block_size) / (64 * 64)
+        if player.block_spawn_timer <= 0:
+            pos = resolve_block_placement(mouse, block_size=block_size)
+            if pos:
+                if isinstance(block_choice, int):
+                    level.append(
+                        Block(
+                            (*pos, block_size, block_size), "block", health=block_health
+                        )
+                    )
+                elif block_choice == "bouncepad":
+                    level.append(
+                        Bouncepad((*pos, block_size, block_size), health=block_health)
+                    )
+                elif block_choice == "unstable":
+                    level.append(
+                        Unstable((*pos, block_size, block_size), health=block_health)
+                    )
+                else:
+                    obj = Object((*pos, block_size, block_size), block_choice)
+                    if hasattr(obj, "health"):
+                        obj.health = block_health
+                    level.append(obj)
+            player.block_spawn_timer = interval
     if keys[pygame.K_p]:
         pygame.display.toggle_fullscreen()
         pygame.display.set_icon(pygame.image.load(join(PATH, ICON)))

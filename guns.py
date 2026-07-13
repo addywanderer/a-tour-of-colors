@@ -1,5 +1,12 @@
 # Per-gun stats: each entry describes a gun's properties used by the game.
 # Keys: name, damage, reload (frames), bullet_speed, bullet_image, gun_image
+BULLET_RADII = {
+    "ammo": 8,
+    "shell": 12,
+    "round": 10,
+    "bb": 6,
+}
+
 GUN_STATS = {
     "debug_gun": {
         "name": "debug_gun",
