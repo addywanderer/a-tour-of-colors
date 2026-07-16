@@ -7,13 +7,13 @@ from os.path import isfile, join
 from random import randint
 from math import floor, ceil, sin, pi, sqrt
 from collections import Counter
+from copy import deepcopy
 
 pygame.init()
 
 CAPTION = "A Tour of Colors"
 ICON = "goal"
 
-ANIM_DELAY = 7
 WIDTH = 1000
 HEIGHT = 800
 DIMS = [WIDTH, HEIGHT]
@@ -24,18 +24,18 @@ AGILE = 4  # ability to change direction
 JUMP = 20
 FRICTION = 0.5
 STOP = 1
-TVEL = 300  # max falling speed
 PERCEPTION = 0.3
 SCROLL = [WIDTH // 3, HEIGHT // 3]  # distance from side of screen to scroll x, y
-RESP_BUFFER = 0.15  # secs before player goes back to start after dying
+RESP_BUFFER = 0.1  # secs before player goes back to start after dying
 BOUNCE_STRENGTH = 1.14  # amount bouncepads bounce
 GRAV_COOLDOWN = 30
 SEARCH_RADIUS = 100  # radius in blocks to search for valid block placement
 # precompute candidate offsets (bx, by) within SEARCH_RADIUS sorted by distance
+search_radius_range = range(-SEARCH_RADIUS, SEARCH_RADIUS + 1)
 SEARCH_OFFSETS = [
     (bx, by)
-    for bx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1)
-    for by in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1)
+    for bx in search_radius_range
+    for by in search_radius_range
     if max(abs(bx), abs(by)) <= SEARCH_RADIUS
 ]
 SEARCH_OFFSETS.sort(key=lambda t: (t[0] * t[0] + t[1] * t[1], abs(t[0]) + abs(t[1])))
@@ -45,23 +45,16 @@ BGCOLOR = "random"
 
 CHARACTER = "troll"
 PLAYER_SIZE = 32  # size of player sprite
+INVINCIBLE = True
 
 # Toolbar / UI for equipping guns and blocks
 TOOLBAR_HEIGHT = 64
 TOOLBAR_ICON_SIZE = 48
 TOOLBAR_PADDING = 16
 TOOLBAR_BORDER = 4
-# Toolbar block placement: tuples of (identifier, health)
-BLOCK_PLACEMENT_OPTIONS = [
-    (4, DEFAULT_BLOCK_HEALTH[4]),
-    (8, DEFAULT_BLOCK_HEALTH[8]),
-    (16, DEFAULT_BLOCK_HEALTH[16]),
-    ("bouncepad", DEFAULT_BLOCK_HEALTH["bouncepad"]),
-    ("ice", DEFAULT_BLOCK_HEALTH["ice"]),
-]
-# currently selected tools
 
-level_num = randint(0, len(LEVELS) - 1)
+# level_num = randint(0, len(LEVELS) - 1)
+level_num = 1
 
 # x_vel is velocity to the right
 # y_vel is velocity down
@@ -112,23 +105,6 @@ def get_rotated_cached(base_key, base_surf, angle, snap_deg=1):
     return surf
 
 
-def circle_rect_collides(center, radius, rect) -> bool:
-    """Check whether a circle intersects a rectangle using the closest point."""
-    cx, cy = center
-    closest_x = min(max(cx, rect.x), rect.right)
-    closest_y = min(max(cy, rect.y), rect.bottom)
-    dx = cx - closest_x
-    dy = cy - closest_y
-    return dx * dx + dy * dy <= radius * radius
-
-
-# ====================================
-
-
-def random_color():
-    return tuple([randint(color_range[i][0], color_range[i][1]) for i in range(3)])
-
-
 def blit_rotated(rotated_surface, world_center) -> None:
     """Blit a pygame.rotate() surface, keeping its center at world_center."""
     screen_center = (
@@ -136,112 +112,6 @@ def blit_rotated(rotated_surface, world_center) -> None:
         floor(world_center[1] - t_offset[1]),
     )
     wd.blit(rotated_surface, rotated_surface.get_rect(center=screen_center))
-
-
-def obj_on_screen(obj) -> bool:
-    return all(-obj.rect[i + 2] < obj.rect[i] - t_offset[i] < DIMS[i] for i in (0, 1))
-
-
-def update_onscreen_objects() -> None:
-    global onscreen_objects
-    onscreen_objects = [o for o in level if obj_on_screen(o)]
-
-
-def block_rect_at_mouse(mouse_screen, size=64) -> pygame.Rect:
-    half = size // 2
-    return pygame.Rect(
-        mouse_screen[0] + t_offset[0] - half,
-        mouse_screen[1] + t_offset[1] - half,
-        size,
-        size,
-    )
-
-
-def block_placement_blocked(rect) -> bool:
-    return any(rect.colliderect(o.rect) for o in level) or rect.colliderect(player.rect)
-
-
-def resolve_enemy_spawn(
-    target_center, search_radius=SEARCH_RADIUS, size=64
-) -> tuple[int, int] | None:
-    anchor = pygame.Rect(
-        target_center[0] - size // 2,
-        target_center[1] - size // 2,
-        size,
-        size,
-    )
-    if not block_placement_blocked(anchor):
-        return anchor.topleft
-
-    for bx, by in SEARCH_OFFSETS:
-        candidate = anchor.move(bx * size, by * size)
-        if not block_placement_blocked(candidate):
-            return candidate.topleft
-    return None
-
-
-def resolve_block_placement(
-    mouse_screen, search_radius=SEARCH_RADIUS, block_size=64
-) -> tuple[int, int] | None:
-    anchor = block_rect_at_mouse(mouse_screen, block_size)
-    if not block_placement_blocked(anchor):
-        return anchor.topleft
-
-    def inch_toward_cursor(start_rect: pygame.Rect) -> tuple[int, int]:
-        """Move a valid rect toward cursor 1 pixel at a time until contact."""
-        candidate = start_rect.copy()
-        target_x = anchor.centerx
-        target_y = anchor.centery
-        x_done = y_done = False
-        while not (x_done and y_done):
-            if not x_done:
-                dx = target_x - candidate.centerx
-                if dx == 0:
-                    x_done = True
-                else:
-                    trial_x = candidate.move((dx > 0) - (dx < 0), 0)
-                    if block_placement_blocked(trial_x):
-                        x_done = True
-                    else:
-                        candidate = trial_x
-
-            if not y_done:
-                dy = target_y - candidate.centery
-                if dy == 0:
-                    y_done = True
-                else:
-                    trial_y = candidate.move(0, (dy > 0) - (dy < 0))
-                    if block_placement_blocked(trial_y):
-                        y_done = True
-                    else:
-                        candidate = trial_y
-        return candidate.topleft
-
-    # test precomputed candidates starting from closest and return the
-    # first placement that can be inched toward the cursor
-    spiral = [
-        (bx, by)
-        for (bx, by) in SEARCH_OFFSETS
-        if max(abs(bx), abs(by)) <= search_radius
-    ]
-    for bx, by in spiral:
-        candidate = anchor.move(bx * block_size, by * block_size)
-        if block_placement_blocked(candidate):
-            continue
-        # pygame.draw.rect(
-        #     wd,
-        #     (255, 0, 0),
-        #     [
-        #         candidate.x - t_offset[0],
-        #         candidate.y - t_offset[1],
-        #         candidate.width,
-        #         candidate.height,
-        #     ],
-        #     2,
-        # )
-        return inch_toward_cursor(candidate)
-
-    return None
 
 
 # returns rotation of sprite by angle clockwise for each obj in sprites
@@ -275,12 +145,47 @@ def load_sprite_sheets(
     return allsprites
 
 
-def load_img(path, width, height):
-    image = pygame.image.load(path)
-    surface = pygame.Surface((width, height), pygame.SRCALPHA, 32)
-    rect = pygame.Rect(0, 0, width, height)
-    surface.blit(image.convert_alpha(), (0, 0), rect)
-    return surface
+# ====================================
+
+
+def random_color():
+    return tuple([randint(color_range[i][0], color_range[i][1]) for i in range(3)])
+
+
+def process_levels(level, color):
+    wd.fill([randint(0, 255) for _ in range(3)])
+    pos = (WIDTH // 2 - 128, HEIGHT // 2 - 32)
+    wd.blit(load_image_cached(join(PATH, "load.png")), pos)
+    pygame.display.update()
+
+    global color_range
+    color_range, looking_for_color = COLORS[0], True
+    while looking_for_color:
+        option = COLORS[randint(0, len(COLORS) - 1)]
+        if color_range != option:
+            color_range = option
+            looking_for_color = False
+    start, bounds, gravity_val = level[0]
+    data = [list(start), list(bounds), gravity_val]
+
+    level_with_objs = []
+    for obj in level[1:]:
+        if obj[1] in ALL_OBJECTS.keys():
+            level_with_objs.append(ALL_OBJECTS[obj[1]](*obj))
+        else:
+            level_with_objs.append(Object(*obj))
+    return data, level_with_objs, random_color() if color == "random" else color
+
+
+# ====================================
+
+
+def normalize(n):
+    if n == 0:
+        return 0
+    elif n > 0:
+        return 1
+    return -1
 
 
 def valid_obj_coll(obj):
@@ -292,151 +197,133 @@ def valid_obj_coll(obj):
     )
 
 
-def enemy_can_see_player(enemy, player) -> bool:
-    start = enemy.rect.center
-    end = player.rect.center
-    for obj in level:
-        if obj.name != "enemy" and obj.rect.clipline(start, end):
-            return False
-    return True
+def collision_quick_test(obj1, obj2):  # checks if collision is impossible
+    return (obj1.rect.centerx - obj2.rect.centerx) ** 2 + (
+        obj1.rect.centery - obj2.rect.centery
+    ) ** 2 > obj1.squared_max_diag_over_four + obj2.squared_max_diag_over_four + obj2.root_max_diag * obj1.root_max_diag / 2
 
 
-def process_levels(level, color):
-    wd.fill([randint(0, 255) for _ in range(3)])
-    pos = (WIDTH // 2 - 128, HEIGHT // 2 - 32)
-    wd.blit(load_img(join(PATH, "load.png"), 256, 64), pos)
-    pygame.display.update()
-
-    def create_object(obj):
-        special_objs = {
-            "bouncepad": Bouncepad,
-            "block": Block,
-            "unstable": Unstable,
-            "moving": Moving,
-            "item": Item,
-            "lock": Lock,
-        }
-        # Extract health if present in level entry: [space, name, health] for healthable objects
-        obj_name = obj[1]
-        path = None
-        angle = 0
-        health = None
-
-        if len(obj) > 2:
-            if obj_name == "block" and isinstance(obj[2], int):
-                health = obj[2]
-            elif obj_name == "bouncepad" and isinstance(obj[2], int):
-                angle = obj[2]
-            elif obj_name == "unstable" and isinstance(obj[2], int):
-                health = obj[2]
-            elif obj_name in ["ice", "sticky", "moving"] and isinstance(obj[2], int):
-                health = obj[2]
-            else:
-                path = obj[2]
-        if len(obj) > 3 and isinstance(obj[3], int):
-            angle = obj[3]
-
-        obj_type = special_objs.get(obj_name, Object)
-
-        if obj_name == "block":
-            created_obj = obj_type(
-                obj[0], obj[1], path=path, health=health if health is not None else None
-            )
-        elif obj_name == "bouncepad":
-            created_obj = obj_type(
-                obj[0], path or "bouncepad", angle=angle, health=health
-            )
-        elif obj_name == "unstable":
-            created_obj = obj_type(
-                obj[0],
-                path or "unstable",
-                angle=angle,
-                health=health,
-            )
-        elif obj_name in ["ice", "sticky", "moving"]:
-            created_obj = obj_type(obj[0], obj_name, health=health)
-        elif obj_name == "item":
-            created_obj = obj_type(obj[0], obj_name, path or obj_name)
-        elif obj_name == "lock":
-            created_obj = obj_type(obj[0], obj_name, path or obj_name)
-        else:
-            created_obj = obj_type(
-                obj[0], obj_name, path=path, angle=angle, health=health
-            )
-        return (
-            created_obj.wires + [created_obj]
-            if created_obj.name == "moving"
-            else [created_obj]
-        )
-
-    global color_range
-    color_range, looking_for_color = COLORS[0], True
-    while looking_for_color:
-        option = COLORS[randint(0, len(COLORS) - 1)]
-        if color_range != option:
-            color_range = option
-            looking_for_color = False
-    level_with_objs = []
-    start, bounds, gravity_val = level[0]
-    data = [list(start), list(bounds), gravity_val]
-    for obj in level[1:]:
-        level_with_objs += create_object(obj)
-    return [data, level_with_objs, random_color() if color == "random" else color]
+def circle_rect_collides(center, radius, rect) -> bool:
+    """Check whether a circle intersects a rectangle using the closest point."""
+    cx, cy = center
+    closest_x = min(max(cx, rect.x), rect.right)
+    closest_y = min(max(cy, rect.y), rect.bottom)
+    dx = cx - closest_x
+    dy = cy - closest_y
+    return dx * dx + dy * dy <= radius * radius
 
 
-class OnScreenObject(pygame.sprite.Sprite):
-    def __init__(self, rect, image=None, float_rect=None, health=100) -> None:
+# ====================================
+
+
+class Object(pygame.sprite.Sprite):
+    def __init__(self, rect, name, angle, health=100, path=None) -> None:
         super().__init__()
+        self.float_rect = [float(i) for i in rect]
         self.rect = pygame.Rect(rect)
-        self.screen_rect = self.rect.copy()
-        self.image = image
-        self.float_rect = (
-            list(float_rect)
-            if float_rect is not None
-            else [
-                float(self.rect.x),
-                float(self.rect.y),
-                float(self.rect.w),
-                float(self.rect.h),
-            ]
-        )
-        self.name = None
-        self.path = None
-        self.dead = False
-        self.health = 100 if health is None else health
+        self.name = name
+        self.health = health
         self.max_health = self.health
+        self.angle = angle
+        self.path = self.name if path is None else path
+
+        self.squared_max_diag = self.rect.width**2 + self.rect.height**2
+        self.squared_max_diag_over_four = self.squared_max_diag / 4
+        self.root_max_diag = sqrt(self.squared_max_diag)
+        self.root_max_diag_two = sqrt(2 * self.squared_max_diag)
+        self.color, self.cooldown = random_color(), 50
+        self.bord = tuple(abs(i - randint(0, 35)) for i in self.color)
+        if self.name not in ["block", "player", "bullet", "item", "lock", "layer"]:
+            self.image = load_image_cached(join(PATH, "objects", self.path + ".png"))
+            self.image = rotate_image([self.image], self.angle)[0]
+        self.dead = False
 
     def maybe_die(self) -> None:
         if self.dead:
             return
         if self.health is not None and self.health <= 0:
-            self.dead = True
             self.handle_death()
 
     def handle_death(self) -> None:
         if self.name == "player":
             player.respawn(data[0])
             return
-        try:
+        self.dead = True
+        if self in level:
             level.remove(self)
-        except Exception:
-            self.dead = True
-        try:
+        if self in onscreen_objects:
             onscreen_objects.remove(self)
-        except Exception:
-            pass
+
+    def draw(self) -> None:
+        pos = [self.rect.x, self.rect.y]
+        wd.blit(self.image, tuple(pos[i] - t_offset[i] for i in [0, 1]))
+        health_ratio = max(0, min(1, self.health / self.max_health))
+        bar_color = [int(self.color[i] * health_ratio) for i in range(3)]
+        overlay = pygame.Surface((self.rect.w - 8, self.rect.h - 8), pygame.SRCALPHA)
+        overlay.fill((*bar_color, 150))
+        wd.blit(overlay, (self.rect.x - t_offset[0] + 4, self.rect.y - t_offset[1] + 4))
+        rect = (
+            self.rect.x - t_offset[0] + 4,
+            self.rect.y - t_offset[1] + 4,
+            self.rect.w - 8,
+            self.rect.h - 8,
+        )
+        pygame.draw.rect(wd, (*bar_color, 160), rect, 2)
+
+    def add_increment(self, increment):
+        self.float_rect[0] += increment[0]
+        self.float_rect[1] += increment[1]
+
+    def update_rect_from_float(self):
+        self.rect.x = int(round(self.float_rect[0]))
+        self.rect.y = int(round(self.float_rect[1]))
+
+    def handle_collision(self, collision_targets=None) -> None:
+        """
+        Generic collision handler for any moving object.
+        Performs step-by-step movement with collision detection.
+        Requires object to have: float_rect, xvel, yvel, rect, squared_max_diag
+        """
+
+        if collision_targets is None:
+            collision_targets = onscreen_objects + [player]
+        fx, fy = ceil(abs(self.xvel)), ceil(abs(self.yvel))
+        max_speed = fx if fx > fy else fy
+        if max_speed == 0:
+            return None
+        increment = [self.xvel / max_speed, self.yvel / max_speed]
+        for _ in range(max_speed):
+            self.add_increment(increment)
+            self.update_rect_from_float()
+            for obj in collision_targets:
+                if obj is self:
+                    continue
+                if not valid_obj_coll(obj):
+                    continue
+                if collision_quick_test(self, obj):
+                    continue
+                if not obj.rect.colliderect(self.rect):
+                    continue
+                self.add_increment([-incr for incr in increment])
+                self.update_rect_from_float()
+                if hasattr(self, "fallcount") and self.yvel > 0:
+                    self.fallcount = 0
+                self.xvel = 0
+                self.yvel = 0
+                return None
 
 
-class Player(OnScreenObject):
+class Player(Object):
     def __init__(self, size) -> None:
+        self.image = load_image_cached(join(PATH, "characters", CHARACTER + ".png"))
         super().__init__(
-            rect=pygame.Rect(*data[0], size, size),
-            float_rect=[*data[0], size, size],
+            pygame.Rect(*data[0], size, size),
+            "player",
+            0,
+            path=None,
             health=1,
         )
-        self.name = "player"
         self.size = size
-        self.image = load_img(join(PATH, "characters", CHARACTER + ".png"), size, size)
         self.images = [flip_image([self.image])[0], self.image]
         self.xvel = self.yvel = self.stationary_xvel = self.stationary_yvel = 0
         self.direction, self.walking, self.fallcount = 1, False, 0
@@ -446,6 +333,7 @@ class Player(OnScreenObject):
         self.collide, self.last_block_on = [None] * 4, None
         self.block_spawn_timer = 0.0
         self.angle = 0
+        self.short_jump = False
         self.bullets = []
         self.toolbar = [
             [
@@ -455,7 +343,13 @@ class Player(OnScreenObject):
                 GUN_STATS["pistol"],
                 GUN_STATS["pistol"],
             ],
-            BLOCK_PLACEMENT_OPTIONS,
+            [
+                [[6, 7], "block", 0, None, DEFAULT_BLOCK_HEALTH[4]],
+                [[64, 4], "block", 0, None, DEFAULT_BLOCK_HEALTH[8]],
+                [[4, 64], "block", 0, None, DEFAULT_BLOCK_HEALTH[16]],
+                [[64, 64], "bouncepad", 90, None, DEFAULT_BLOCK_HEALTH["bouncepad"]],
+                [[64, 64], "ice", 0, None, DEFAULT_BLOCK_HEALTH["ice"]],
+            ],
         ]
         self.selected = [self.toolbar[0][0], self.toolbar[1][0]]
         self.select_num = [0, 0]
@@ -464,51 +358,33 @@ class Player(OnScreenObject):
         self.update_gun()
 
     def update_sprite(self) -> None:
-        self.direction = int(self.direction)
-        self.image = self.images[(self.direction + 1) // 2]
+        direction = (normalize(self.xvel) + 1) // 2
+        if direction:
+            self.image = self.images[direction]
         self.update()
 
     def update(self) -> None:
         self.rect = self.image.get_rect(
             topleft=tuple([round(self.float_rect[i]) for i in [0, 1]])
         )
-        self.screen_rect = self.rect.copy()
-
-    def bullet_targets(self):
-        return [o for o in level if valid_obj_coll(o) or o.name in ("block")]
 
     def update_aim(self) -> None:
-        mouse_pos_diff_x = (
-            mouse[0] + t_offset[0] - self.float_rect[0] - self.float_rect[2] / 2
-        )
-        mouse_pos_diff_y = (
-            mouse[1] + t_offset[1] - self.float_rect[1] - self.float_rect[3] / 2
-        )
-        mouse_pos_diff_mag = sqrt(mouse_pos_diff_x**2 + mouse_pos_diff_y**2)
-
-        self.angle = -pygame.Vector2(mouse_pos_diff_x, mouse_pos_diff_y).as_polar()[1]
-        self.aim_dir = [
-            mouse_pos_diff_x / mouse_pos_diff_mag,
-            mouse_pos_diff_y / mouse_pos_diff_mag,
+        mouse_pos_diffs = [
+            (mouse[i] + t_offset[i] - self.float_rect[i] - self.float_rect[2 + i] / 2)
+            for i in [0, 1]
         ]
+        mouse_pos_diff_mag = sqrt(mouse_pos_diffs[0] ** 2 + mouse_pos_diffs[1] ** 2)
+
+        self.angle = -pygame.Vector2(*mouse_pos_diffs).as_polar()[1]
+        self.aim_dir = [mouse_pos_diffs[i] / mouse_pos_diff_mag for i in [0, 1]]
 
     def update_gun(self) -> None:
         self.update_aim()
 
         if pygame.mouse.get_pressed(num_buttons=3)[0] and self.loaded >= 0:
-            self.bullets.append(
-                Bullet(
-                    self,
-                    self.bullet_targets(),
-                    pygame.Rect(
-                        self.rect.centerx - 32,
-                        self.rect.centery - 32,
-                        64,
-                        64,
-                    ),
-                    self.selected[0]["bullet_image"],
-                )
-            )
+            rect = (self.rect.centerx - 32, self.rect.centery - 32, 64, 64)
+            bullet = Bullet(self, rect, self.selected[0]["bullet_image"])
+            self.bullets.append(bullet)
             recoil = self.selected[0]["recoil"]
             if recoil:
                 self.xvel -= self.aim_dir[0] * recoil
@@ -521,7 +397,7 @@ class Player(OnScreenObject):
             if bullet.dead:
                 self.bullets.remove(bullet)
             else:
-                bullet.loop(self, self.bullet_targets())
+                bullet.loop(self)
 
         # use cached image + cached rotation to avoid repeated loads/transforms
         gun_img_path = join(PATH, "guns", self.selected[0].get("gun_image") + ".png")
@@ -535,97 +411,50 @@ class Player(OnScreenObject):
 
     def draw_toolbar(self) -> None:
         """Draw toolbar with guns and block-size selectors at top-left."""
-        x = DIMS[0] // 2 - (
-            len(self.toolbar[0]) * (TOOLBAR_ICON_SIZE + TOOLBAR_PADDING)
-            + TOOLBAR_PADDING
-        )
+        icon_dist = TOOLBAR_ICON_SIZE + TOOLBAR_PADDING
+        x = WIDTH // 2 - (len(self.toolbar[0]) * (icon_dist) + TOOLBAR_PADDING)
         y = HEIGHT - TOOLBAR_HEIGHT + (TOOLBAR_HEIGHT - TOOLBAR_ICON_SIZE) // 2
 
-        # draw guns
-        for i, gun in enumerate(self.toolbar[0]):
-            img = load_img(
-                join(PATH, "guns", gun["gun_image"] + ".png"),
-                TOOLBAR_ICON_SIZE,
-                TOOLBAR_ICON_SIZE,
-            )
-            rect = pygame.Rect(x, y, TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE)
-            wd.blit(img, rect.topleft)
-            if i == self.select_num[0]:
-                pygame.draw.rect(wd, (255, 255, 0), rect, TOOLBAR_BORDER)
-            else:
-                pygame.draw.rect(wd, (0, 0, 0), rect, TOOLBAR_BORDER)
-            x += TOOLBAR_ICON_SIZE + TOOLBAR_PADDING
-
-        # separator
-        x += TOOLBAR_PADDING
-
-        # draw block placement selectors, including special items
-        block_ids = [
-            item[0] if isinstance(item, tuple) else item for item in self.toolbar[1]
-        ]
-        max_size = max(item for item in block_ids if isinstance(item, int))
-        for i, item in enumerate(self.toolbar[1]):
-            block_id = item[0] if isinstance(item, tuple) else item
-            box_rect = pygame.Rect(x, y, TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE)
-            if isinstance(block_id, int):
-                inner_w = int((block_id / max_size) * (TOOLBAR_ICON_SIZE - 8))
-                inner_h = int((block_id / max_size) * (TOOLBAR_ICON_SIZE - 8))
-                inner_x = box_rect.x + (TOOLBAR_ICON_SIZE - inner_w) // 2
-                inner_y = box_rect.y + (TOOLBAR_ICON_SIZE - inner_h) // 2
-                pygame.draw.rect(wd, (0, 0, 0), box_rect)
-                pygame.draw.rect(
-                    wd,
-                    (200, 200, 200),
-                    (inner_x, inner_y, inner_w, inner_h),
-                )
-            else:
-                img = load_img(
-                    join(PATH, "objects", block_id + ".png"),
-                    TOOLBAR_ICON_SIZE,
-                    TOOLBAR_ICON_SIZE,
-                )
-                wd.blit(img, box_rect.topleft)
-            if i == self.select_num[1]:
-                pygame.draw.rect(wd, (255, 255, 0), box_rect, TOOLBAR_BORDER)
-            else:
-                pygame.draw.rect(wd, (0, 0, 0), box_rect, TOOLBAR_BORDER)
-            x += TOOLBAR_ICON_SIZE + TOOLBAR_PADDING
+        for j in [0, 1]:
+            for i, item in enumerate(self.toolbar[j]):
+                box_rect = pygame.Rect(x, y, TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE)
+                if j == 1 and item[1] == "block":
+                    max_size = max(max(*item[0]) for item in self.toolbar[1])
+                    inner_dims = [int((item[0][i] / max_size) * (TOOLBAR_ICON_SIZE - 8)) for i in [0, 1]]
+                    inner_pos = [box_rect[i] + (TOOLBAR_ICON_SIZE - inner_dims[i]) // 2 for i in [0, 1]]
+                    pygame.draw.rect(wd, (0, 0, 0), box_rect)
+                    pygame.draw.rect(wd, (200, 200, 200), (*inner_pos, *inner_dims))
+                    x += icon_dist
+                    continue
+                if j == 0:
+                    path = join(PATH, "guns", item["gun_image"] + ".png")
+                else: 
+                    path = join(PATH, "objects", item[1] + ".png")
+                img = load_image_cached(path)
+                surf = pygame.Surface([TOOLBAR_ICON_SIZE] * 2, pygame.SRCALPHA)
+                surf.blit(img, (0, 0))
+                wd.blit(surf, box_rect.topleft)
+                color = (255, 255, 0) if i == self.select_num[j] else (0, 0, 0)
+                pygame.draw.rect(wd, color, box_rect, TOOLBAR_BORDER)
+                x += icon_dist
+            x += TOOLBAR_PADDING
 
     def draw(self) -> None:
         for bullet in self.bullets:
             if not bullet.dead:
                 blit_rotated(bullet.rotated_image, bullet.rect.center)
-                pygame.draw.circle(
-                    wd,
-                    (255, 255, 255),
-                    (
-                        floor(bullet.rect.centerx - t_offset[0]),
-                        floor(bullet.rect.centery - t_offset[1]),
-                    ),
-                    int(bullet.radius),
-                    1,
-                )
         image_pos = [self.float_rect[i] - t_offset[i] for i in [0, 1]]
         wd.blit(self.image, [floor(image_pos[i]) for i in [0, 1]])
         blit_rotated(self.rotated_gun, self.rect.center)
         self.draw_toolbar()
 
     def respawn(self, start) -> list[float, float]:
-        global gravity
+        global gravity, level, color, data
         self.float_rect[:2], self.collide, self.fallcount = start, [None] * 4, 1
-        gravity, self.last_block_on, self.xvel, self.yvel, self.inventory = (
-            data[2],
-            None,
-            0,
-            0,
-            [],
-        )
+        self.xvel, self.yvel = 0, 0
+        gravity, self.last_block_on, self.inventory = data[2], None, []
         self.bullets, self.loaded = [], 0
-        for obj in level:
-            if obj.name == "item":
-                obj.collected = False
-            if obj.name == "unstable":
-                obj.count_to_break = 60
+        data, level, color = process_levels(LEVELS[level_num - 1], BGCOLOR)
         self.update()
 
     def loop(self) -> list[float, float]:
@@ -640,7 +469,7 @@ class Player(OnScreenObject):
 
         if self.hit_count:
             self.hit_count += 1
-        if self.hit_count > FPS * RESP_BUFFER:
+        if self.hit_count > FPS * RESP_BUFFER and not INVINCIBLE:
             self.hit_count = 0
             self.respawn(data[0])
         elif not (data[1][0] <= self.float_rect[1] <= data[1][1]):
@@ -653,10 +482,6 @@ class Player(OnScreenObject):
             if -self.stop <= self.xvel <= self.stop:
                 self.xvel = 0
         self.walking = False
-
-        self.yvel = (
-            TVEL if self.yvel > TVEL else -TVEL if self.yvel < -TVEL else self.yvel
-        )
 
         self.fallcount += 1
         if not ((self.collide[2] and gravity < 0) or (self.collide[3] and gravity > 0)):
@@ -684,11 +509,10 @@ class Player(OnScreenObject):
         self.xvel_before_coll, self.yvel_before_coll = self.xvel, self.yvel
         axes = [[-1, 0], [1, 0], [0, -1], [0, 1]]
         for i, axis in enumerate(axes):
-            if self.collide[i]:
-                self.collide[i] = next(
-                    (obj for obj in onscreen_objects if self.try_direction(axis, obj)),
-                    None,
-                )
+            iterator = (
+                obj for obj in onscreen_objects if self.try_direction(axis, obj)
+            )
+            self.collide[i] = next(iterator, None)
         self.xvel += self.stationary_xvel
         self.yvel += self.stationary_yvel
         fx, fy = ceil(abs(self.xvel)), ceil(abs(self.yvel))
@@ -700,14 +524,9 @@ class Player(OnScreenObject):
         for _ in range(max_speed):
             self.add_incr(increment[0], increment[1])
             for obj in onscreen_objects:
-                if (obj.rect.centerx - self.rect.centerx) ** 2 + (
-                    obj.rect.centery - self.rect.centery
-                ) ** 2 > (obj.squared_max_diag / 4) + (2 * self.size**2) + (
-                    self.size * (obj.rect.width + obj.rect.height)
-                ):
+                if collision_quick_test(self, obj):
                     continue
-                collided = self.has_collided(obj)
-                if not collided:
+                if not self.has_collided(obj):
                     continue
                 self.add_incr(-increment[0], -increment[1])
                 coll = [self.try_direction(i, obj) for i in axes]
@@ -733,32 +552,20 @@ class Player(OnScreenObject):
             self.fallcount = 0
 
 
-class Bullet(OnScreenObject):
-    def __init__(self, player, objects, rect, path) -> None:
-        super().__init__(rect=rect, health=1)
-        self.angle = player.angle
+class Bullet(Object):
+    def __init__(self, player, rect, path) -> None:
+        super().__init__(rect, "bullet", player.angle)
+        self.path = path
         self.speed = player.selected[0]["bullet_speed"]
         self.damage = player.selected[0].get("damage", 0)
-        self.path = path
         self.radius = BULLET_RADII.get(path, BULLET_RADII.get("ammo", 8))
-        self.dead = False
-        self.health = 1
-        self.max_health = 1
         self.movement = [
             player.aim_dir[0] * self.speed,
             player.aim_dir[1] * self.speed,
         ]
-        self.loop(player, objects)
-
-    def loop(self, player, objects) -> None:
-        self.float_rect[0] += self.movement[0]
-        self.float_rect[1] += self.movement[1]
-        self.rect.x, self.rect.y = round(self.float_rect[0]), round(self.float_rect[1])
-        self.screen_rect = self.rect.copy()
-
         # use cached load/rotation for bullet image
         base_path = (
-            join(PATH, "bullets", self.path + ".png")
+            join("bullets", self.path + ".png")
             if isinstance(self.path, str)
             else self.path
         )
@@ -773,6 +580,12 @@ class Bullet(OnScreenObject):
         if getattr(self, "_rot_img_id", None) != id(rotated):
             self.rotated_image = rotated
             self._rot_img_id = id(rotated)
+        self.loop(player)
+
+    def loop(self, player) -> None:
+        self.float_rect[0] += self.movement[0]
+        self.float_rect[1] += self.movement[1]
+        self.rect.x, self.rect.y = round(self.float_rect[0]), round(self.float_rect[1])
 
         # bounding-box prefilter before overlap
         if (
@@ -798,72 +611,9 @@ class Bullet(OnScreenObject):
             break
 
 
-class Object(OnScreenObject):
-    def __init__(self, space, name, path=None, angle=0, health=None) -> None:
-        super().__init__(
-            rect=pygame.Rect(*space),
-            float_rect=[
-                float(space[0]),
-                float(space[1]),
-                float(space[2]),
-                float(space[3]),
-            ],
-            health=health if health is not None else 100,
-        )
-        if isinstance(path, int):
-            angle, path = path, name
-        self.name, self.path = name, path or name
-        self.squared_max_diag = self.rect.width**2 + self.rect.height**2
-        self.color, self.cooldown = random_color(), 50
-        self.bord = tuple(abs(i - randint(0, 35)) for i in self.color)
-        if name in ["block", "bouncepad", "unstable", "ice", "sticky", "moving"]:
-            if health is None:
-                health = 100
-            self.health = health
-            self.max_health = health
-        if name not in ["block", "item", "lock"]:
-            self.image = rotate_image(
-                [load_img(join(PATH, "objects", self.path + ".png"), *space[2:])], angle
-            )[0]
-        else:
-            self.image = pygame.surface.Surface(self.rect.size)
-
-    def draw(self) -> None:
-        pos = [self.rect.x, self.rect.y]
-        wd.blit(self.image, tuple(pos[i] - t_offset[i] for i in [0, 1]))
-        if getattr(self, "health", None) is not None:
-            max_h = getattr(self, "max_health", 100) or 100
-            health_ratio = max(0, min(1, self.health / max_h))
-            bar_color = [int(self.color[i] * health_ratio) for i in range(3)]
-            overlay = pygame.Surface(
-                (self.rect.w - 8, self.rect.h - 8), pygame.SRCALPHA
-            )
-            overlay.fill((*bar_color, 150))
-            wd.blit(
-                overlay, (self.rect.x - t_offset[0] + 4, self.rect.y - t_offset[1] + 4)
-            )
-            pygame.draw.rect(
-                wd,
-                (*bar_color, 160),
-                (
-                    self.rect.x - t_offset[0] + 4,
-                    self.rect.y - t_offset[1] + 4,
-                    self.rect.w - 8,
-                    self.rect.h - 8,
-                ),
-                2,
-            )
-
-
 class Block(Object):
-    def __init__(self, space, _, path=None, health=None):
-        super().__init__(space, "block", path=path, health=health)
-        # blocks have health from BLOCK_HEALTH config, overridable
-        if health is not None:
-            self.health = health
-            self.max_health = health
-        if path is None:
-            path = f"block{space[2]//64}x{space[3]//64}"
+    def __init__(self, rect, name, angle, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
 
     def draw(self):
         pos = [self.rect.x, self.rect.y]
@@ -896,10 +646,11 @@ class Block(Object):
 
 
 class Bouncepad(Object):
-    def __init__(self, space, path="bouncepad", angle=0, health=None) -> None:
-        super().__init__(space, "bouncepad", path=path, angle=angle, health=health)
-        sprite_sheet = load_sprite_sheets(join(PATH, "objects"), space[2], space[3])
-        self.sprites = rotate_image(sprite_sheet[path], angle)
+    def __init__(self, rect, name, angle, health=100, path=None) -> None:
+        super().__init__(rect, name, angle, health=100, path=None)
+        self.path = self.name
+        sprite_sheet = load_sprite_sheets(join(PATH, "objects"), rect[2], rect[3])
+        self.sprites = rotate_image(sprite_sheet[self.path], angle)
         if health is not None:
             self.health = health
             self.max_health = health
@@ -916,19 +667,10 @@ class Bouncepad(Object):
 
 
 class Unstable(Object):
-    def __init__(
-        self,
-        space,
-        path="unstable",
-        angle=0,
-        count_to_break=60,
-        respawn_buffer=120,
-        health=None,
-    ) -> None:
-        super().__init__(space, "unstable", path, angle, health=health)
-        if health is not None:
-            self.health = health
-            self.max_health = health
+    def __init__(self, rect, name, angle, health=100, path=None) -> None:
+        super().__init__(rect, name, angle, health=100, path=None)
+        count_to_break = 60
+        respawn_buffer = 120
         self.count_to_break, self.break_len, self.respawn_buffer = (
             count_to_break,
             count_to_break,
@@ -967,31 +709,23 @@ class Unstable(Object):
 
 
 class Moving(Object):
-    def __init__(
-        self,
-        space,
-        path="moving",
-        _=0,
-        move_axis=0,
-        move_range=10 * 64,
-        speed=4,
-        health=None,
-    ):
+    def __init__(self, rect, name, angle, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
+        move_axis = 0
+        move_range = 10 * 64
+        speed = 4
         self.angle = move_axis * 90
-        super().__init__(space, "moving", path, self.angle, health=100)
-        self.sprite_sheet = load_sprite_sheets(
-            join(PATH, "objects"), space[2], space[3]
-        )
-        self.sprites = rotate_image(self.sprite_sheet[path], self.angle)
+        self.sprite_sheet = load_sprite_sheets(join(PATH, "objects"), rect[2], rect[3])
+        self.sprites = rotate_image(self.sprite_sheet[self.path], self.angle)
         wire = [64, 0] if move_axis == 0 else [0, 64]
         args = ["layer", "wire", self.angle]
         self.wires = [
-            Object([space[0] + wire[0] * i, space[1] + wire[1] * i, 64, 64], *args)
+            Object([rect[0] + wire[0] * i, rect[1] + wire[1] * i, 64, 64], *args)
             for i in range((move_range // 64) + 1)
         ]
         self.anim, self.count, self.anim_delay = 0, 0, 1
         self.change_direction = 0
-        self.start_pos = [space[0], space[1]]
+        self.start_pos = [rect[0], rect[1]]
         self.move_axis = move_axis  # 0 for x, 1 for y
         self.move_range = move_range
         self.speed = speed
@@ -1027,16 +761,12 @@ class Moving(Object):
 
 
 class Item(Object):
-    def __init__(self, space, name, path, anim_delay=30):
-        super().__init__(space, name, health=100)
-        self.item_name, self.anim_delay, self.count, self.collected, self.orig_y = (
-            path,
-            anim_delay,
-            0,
-            False,
-            self.rect.y,
-        )
-        self.image = load_img(join(PATH, "items", path + ".png"), *space[2:])
+    def __init__(self, rect, name, angle, key_name, health=100, path=None):
+        super().__init__(rect, name, angle, path=key_name, health=health)
+        self.image = load_image_cached(join(PATH, "items", self.path + ".png"))
+        self.anim_delay = 30
+        self.item_name, self.anim_delay, self.count = self.path, self.anim_delay, 0
+        self.collected, self.orig_y = False, self.rect.y
 
     def draw(self):
         if not self.collected:
@@ -1047,10 +777,10 @@ class Item(Object):
 
 
 class Lock(Object):
-    def __init__(self, space, name, key_name):
-        super().__init__(space, name, health=100)
+    def __init__(self, rect, name, angle, key_name, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
         self.images = [
-            load_img(join(PATH, "objects", p + ".png"), *self.rect.size)
+            load_image_cached(join(PATH, "objects", p + ".png"))
             for p in ["lock_" + key_name[-1], "open_" + key_name[-1]]
         ]
         self.image, self.key_name, self.unlocked = self.images[0], key_name, False
@@ -1060,15 +790,48 @@ class Lock(Object):
         self.image = self.images[self.unlocked]
 
 
+def resolve_enemy_spawn(target_center, size=64) -> tuple[int, int] | None:
+    anchor = pygame.Rect(
+        target_center[0] - size // 2,
+        target_center[1] - size // 2,
+        size,
+        size,
+    )
+    if not block_placement_blocked(anchor):
+        return anchor.topleft
+
+    for bx, by in SEARCH_OFFSETS:
+        candidate = anchor.move(bx * size, by * size)
+        if not block_placement_blocked(candidate):
+            return candidate.topleft
+    return None
+
+
 class Enemy(Object):
-    def __init__(self, space, path=None, health=200, speed=3):
-        super().__init__(space, "enemy", health=health)
-        self.health = health
-        self.max_health = health
-        self.speed = speed
+    def __init__(self, rect, name, angle, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
+
+    def can_see_player(enemy, player) -> bool:
+        start = enemy.rect.center
+        end = player.rect.center
+        for obj in level:
+            if obj.name != "enemy" and obj.rect.clipline(start, end):
+                return False
+        return True
+
+    def update(self) -> None:
+        """Update rect position from float_rect"""
+        self.rect.x = int(round(self.float_rect[0]))
+        self.rect.y = int(round(self.float_rect[1]))
+
+
+class FlyingEnemy(Enemy):
+    def __init__(self, rect, name, angle, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
+        self.speed = 3
 
     def loop(self):
-        if not enemy_can_see_player(self, player):
+        if not self.can_see_player(self, player):
             return None
 
         # move toward the player in small steps and stop on collision
@@ -1078,15 +841,6 @@ class Enemy(Object):
         move_x = (dx / mag) * self.speed
         move_y = (dy / mag) * self.speed
 
-        # ensure we have float tracking for smooth movement
-        if not hasattr(self, "float_rect"):
-            self.float_rect = [
-                float(self.rect.x),
-                float(self.rect.y),
-                float(self.rect.w),
-                float(self.rect.h),
-            ]
-
         steps = max(1, ceil(max(abs(move_x), abs(move_y))))
         step_x = move_x / steps
         step_y = move_y / steps
@@ -1094,8 +848,7 @@ class Enemy(Object):
         for _ in range(steps):
             self.float_rect[0] += step_x
             self.float_rect[1] += step_y
-            self.rect.x = int(round(self.float_rect[0]))
-            self.rect.y = int(round(self.float_rect[1]))
+            self.update()
 
             # check collisions with onscreen_objects (cheap rect check first)
             for o in onscreen_objects:
@@ -1109,28 +862,67 @@ class Enemy(Object):
                 # collided: revert last micro-step and stop moving
                 self.float_rect[0] -= step_x
                 self.float_rect[1] -= step_y
-                self.rect.x = int(round(self.float_rect[0]))
-                self.rect.y = int(round(self.float_rect[1]))
+                self.update()
                 stopped = True
                 break
             if stopped:
                 break
 
 
+class FallingEnemy(Enemy):
+    def __init__(self, rect, name, angle, health=100, path=None):
+        super().__init__(rect, name, angle, health=100, path=None)
+        self.speed = 20
+        self.jump_power = 20
+        self.jump_cooldown = 30
+        # Physics
+        self.yvel = 0
+        self.xvel = 0
+        self.fallcount = 0
+
+    def loop(self):
+        if not (data[1][0] <= self.float_rect[1] <= data[1][1]):
+            self.handle_death()
+            return None
+
+        if self.jump_cooldown > 0:
+            self.jump_cooldown -= 1
+        self.fallcount += 1
+        self.yvel += (self.fallcount / FPS) * gravity
+
+        self.xvel *= 0.9
+
+        self.handle_collision()
+        self.update()
+
+        dx = player.rect.centerx - self.rect.centerx
+        dy = player.rect.centery - self.rect.centery
+
+        if (
+            self.fallcount == 0
+            and self.can_see_player(self, player)
+            and self.jump_cooldown <= 0
+        ):
+            mag = sqrt(dx * dx + dy * dy) or 1
+            self.xvel = (dx / mag) * self.speed
+            self.yvel = -self.jump_power
+            self.jump_cooldown = 30
+
+
 def obj_loop() -> None:
     for obj in list(level):
         if obj.dead:
-            continue
+            obj.handle_death()
         obj.maybe_die()
         if obj.dead:
             continue
-        if obj.name in ["moving", "bouncepad", "item", "lock", "unstable", "enemy"]:
+        if hasattr(obj, "loop"):
             obj.loop()
 
 
-def obj_interaction() -> bool:
-    global gravity, data, level, level_num, color
-    keys, short_jump = pygame.key.get_pressed(), False
+def obj_interaction():
+    global data, level_num, level, color
+    player.short_jump = False
     player.friction, last = FRICTION, player.last_block_on
     # print([coll.rect for coll in player.collide if coll])
     if data[2] > 0:
@@ -1151,12 +943,6 @@ def obj_interaction() -> bool:
         if count >= 3 and not (obj.name == "moving" and obj.change_direction):
             return player.respawn(data[0])
 
-    if keys[pygame.K_l]:
-        level_num = (level_num + 1) % len(LEVELS)
-        data, level, color = process_levels(LEVELS[level_num - 1], BGCOLOR)
-        gravity = data[2]
-        player.respawn(data[0])
-        return None
     for obj in player.collide:
         if not obj:
             continue
@@ -1168,9 +954,7 @@ def obj_interaction() -> bool:
             gravity = data[2]
             player.respawn(data[0])
             return None
-        elif obj.name == "spike":
-            player.hit_count += 1
-        elif obj.name == "enemy":
+        elif obj.name in ["spike", "enemy", "falling_enemy"]:
             player.hit_count += 1
         elif obj.name == "gravity" and player.gravity_switch == 0:
             gravity, player.gravity_switch = gravity * -1, GRAV_COOLDOWN
@@ -1191,16 +975,13 @@ def obj_interaction() -> bool:
         elif obj.name == "sticky":
             player.xvel, player.yvel = 0, 0
             if obj in player.collide[2:]:
-                short_jump = True
+                player.short_jump = True
         elif obj.name == "unstable":
             obj.count_to_break -= 1
         elif obj.name == "ice":
             player.friction = 0.99
-            player.mspeed, player.agile, player.stop = (
-                MSPEED * 1.5,
-                AGILE * 0.5,
-                STOP * 0.5,
-            )
+            player.mspeed, player.agile = MSPEED * 1.5, AGILE * 0.5
+            player.stop = STOP * 0.5
         elif obj.name == "moving":
             if obj.move_axis == 0:
                 player.stationary_xvel = obj.speed
@@ -1210,7 +991,18 @@ def obj_interaction() -> bool:
             obj.collected = True
             player.inventory.append(obj)
 
+
+def handle_inputs():
+    global gravity, data, level, level_num, color
+    keys = pygame.key.get_pressed()
+
     m_agile = player.mspeed - player.agile
+    if keys[pygame.K_l]:
+        level_num = (level_num + 1) % len(LEVELS)
+        data, level, color = process_levels(LEVELS[level_num - 1], BGCOLOR)
+        gravity = data[2]
+        player.respawn(data[0])
+        return None
     if keys[pygame.K_r]:
         player.respawn(data[0])
     if keys[pygame.K_c]:
@@ -1220,36 +1012,16 @@ def obj_interaction() -> bool:
             0.0, player.block_spawn_timer - clock.get_time() / 1000.0
         )
     if pygame.mouse.get_pressed(num_buttons=3)[2]:
-        block_data = player.selected[1]
-        if isinstance(block_data, tuple):
-            block_choice, block_health = block_data
-        else:
-            block_choice, block_health = block_data, 100
-        block_size = block_choice if isinstance(block_choice, int) else PLAYER_SIZE
-        interval = 1.0 * (block_size * block_size) / (64 * 64)
         if player.block_spawn_timer <= 0:
-            pos = resolve_block_placement(mouse, block_size=block_size)
-            if pos:
-                if isinstance(block_choice, int):
-                    level.append(
-                        Block(
-                            (*pos, block_size, block_size), "block", health=block_health
-                        )
-                    )
-                elif block_choice == "bouncepad":
-                    level.append(
-                        Bouncepad((*pos, block_size, block_size), health=block_health)
-                    )
-                elif block_choice == "unstable":
-                    level.append(
-                        Unstable((*pos, block_size, block_size), health=block_health)
-                    )
-                else:
-                    obj = Object((*pos, block_size, block_size), block_choice)
-                    if hasattr(obj, "health"):
-                        obj.health = block_health
-                    level.append(obj)
-            player.block_spawn_timer = interval
+            parameters = deepcopy(player.selected[1])
+            parameters[0] = (
+                list(resolve_block_placement(mouse, block_size=parameters[0]))
+                + parameters[0]
+            )
+            level.append((ALL_OBJECTS[parameters[1]] if parameters[1] in ALL_OBJECTS \
+                           else Object)(*parameters))
+            player.block_spawn_timer = (
+                player.selected[1][0][0] * player.selected[1][0][1] / 4096.0)
     if keys[pygame.K_p]:
         pygame.display.toggle_fullscreen()
         pygame.display.set_icon(pygame.image.load(join(PATH, ICON)))
@@ -1268,7 +1040,7 @@ def obj_interaction() -> bool:
         player.fallcount == 0
     ):
         player.yvel = -JUMP * (gravity // abs(gravity))
-        if short_jump:
+        if player.short_jump:
             player.yvel *= 0.2
         player.fallcount = 0
 
@@ -1296,7 +1068,76 @@ def obj_interaction() -> bool:
             (player.rect.centerx + 500, player.rect.centery)
         )
         if spawn_point:
-            level.append(Enemy([spawn_point[0], spawn_point[1], 64, 64]))
+            level.append(
+                FlyingEnemy([spawn_point[0], spawn_point[1], 32, 32], "enemy", 0)
+            )
+
+    # spawn a falling enemy near the player when 'u' is pressed
+    if keys[pygame.K_u]:
+        spawn_point = resolve_enemy_spawn(
+            (player.rect.centerx + 500, player.rect.centery)
+        )
+        if spawn_point:
+            level.append(
+                FallingEnemy([spawn_point[0], spawn_point[1], 32, 32], "enemy", 0)
+            )
+
+
+def block_rect_at_mouse(mouse_screen, size=[64, 64]) -> pygame.Rect:
+    return pygame.Rect(
+        mouse_screen[0] + t_offset[0] - size[0] // 2,
+        mouse_screen[1] + t_offset[1] - size[1] // 2,
+        size[0],
+        size[1],
+    )
+
+
+def block_placement_blocked(rect) -> bool:
+    return any(rect.colliderect(o.rect) for o in level) or rect.colliderect(player.rect)
+
+
+def resolve_block_placement(
+    mouse_screen, search_radius=SEARCH_RADIUS, block_size=[64, 64]
+) -> tuple[int, int] | None:
+    anchor = block_rect_at_mouse(mouse_screen, block_size)
+    if not block_placement_blocked(anchor):
+        return anchor.topleft
+
+    def inch_toward_cursor(start_rect: pygame.Rect) -> tuple[int, int]:
+        """Move a valid rect toward cursor 1 pixel at a time until contact."""
+        candidate = start_rect.copy()
+        cand_center = [candidate.centerx, candidate.centery]
+        target_anchors = [anchor.centerx, anchor.centery]
+        axes_done = [False] * 2
+        while not (axes_done[0] and axes_done[1]):
+            for i in [0, 1]:
+                if not axes_done[i]:
+                    disp = target_anchors[i] - cand_center[i]
+                    if disp == 0:
+                        axes_done[i] = True
+                        continue
+                    movement = ((disp > 0) - (disp < 0), 0) if i == 0 \
+                        else (0, (disp > 0) - (disp < 0))
+                    trial = candidate.move(*movement)
+                    if block_placement_blocked(trial):
+                        axes_done[i] = True
+                    else:
+                        candidate = trial
+        return candidate.topleft
+
+    # test precomputed candidates starting from closest and return the
+    # first placement that can be inched toward the cursor
+    max_block_side = max(*block_size)
+    normalizer = [block_size[i] / max_block_side for i in [0, 1]]
+    for (bx, by) in SEARCH_OFFSETS:
+        if max(abs(bx), abs(by)) <= search_radius:
+            candidate = anchor.move(int(bx * normalizer[1] * block_size[0]), \
+                                    int(by * normalizer[0] * block_size[1]))
+            if block_placement_blocked(candidate):
+                continue
+            return inch_toward_cursor(candidate)
+
+    return None
 
 
 def draw_aim_overlay() -> None:
@@ -1306,38 +1147,16 @@ def draw_aim_overlay() -> None:
     )
     mouse_screen = (floor(mouse[0]), floor(mouse[1]))
     pygame.draw.line(wd, (255, 255, 255), player_screen, mouse_screen, 1)
-    block_data = player.selected[1]
-    if isinstance(block_data, tuple):
-        block_choice = block_data[0]
-    else:
-        block_choice = block_data
-    block_size = block_choice if isinstance(block_choice, int) else PLAYER_SIZE
-    half = block_size // 2
+    block_size = player.selected[1][0]
     resolved = resolve_block_placement(mouse, block_size=block_size)
-    naive_color = (
-        (255, 0, 0)
-        if resolved and resolved != block_rect_at_mouse(mouse, block_size).topleft
-        else (100, 255, 100)
-    )
+    condition = resolved and resolved != block_rect_at_mouse(mouse, block_size).topleft
+    naive_color = (255, 0, 0) if condition else (100, 255, 100)
 
-    pygame.draw.rect(
-        wd,
-        naive_color,
-        (mouse[0] - half, mouse[1] - half, block_size, block_size),
-        4,
-    )
-    if resolved and resolved != block_rect_at_mouse(mouse, block_size).topleft:
-        pygame.draw.rect(
-            wd,
-            (100, 255, 100),
-            (
-                resolved[0] - t_offset[0],
-                resolved[1] - t_offset[1],
-                block_size,
-                block_size,
-            ),
-            4,
-        )
+    rect = (*[mouse[i] - block_size[i] // 2 for i in [0, 1]], *block_size)
+    pygame.draw.rect(wd, naive_color, rect, 4)
+    if resolved and condition:
+        rect = (*[resolved[i] - t_offset[i] for i in [0, 1]], *block_size)
+        pygame.draw.rect(wd, (100, 255, 100), rect, 4)
 
 
 def draw() -> None:
@@ -1351,14 +1170,10 @@ def draw() -> None:
 
 def title_loop():
     wd.fill(color)
-    wd.blit(
-        load_img(join(PATH, "title.png"), 256, 128),
-        (WIDTH // 2 - 128, HEIGHT // 3 - 64, 256, 128),
-    )
-    wd.blit(
-        load_img(join(PATH, "play.png"), 128, 64),
-        (WIDTH // 2 - 64, 2 * HEIGHT // 3 - 32, 128, 64),
-    )
+    rect = (WIDTH // 2 - 128, HEIGHT // 3 - 64, 256, 128)
+    wd.blit(load_image_cached(join(PATH, "title.png")), rect)
+    rect = (WIDTH // 2 - 64, 2 * HEIGHT // 3 - 32, 128, 64)
+    wd.blit(load_image_cached(join(PATH, "play.png")), rect)
     if (
         WIDTH // 2 - 64 < mouse[0] < WIDTH // 2 + 64
         and 2 * HEIGHT // 3 - 32 < mouse[1] < 2 * HEIGHT // 3 + 32
@@ -1393,6 +1208,12 @@ def loop_color():
         tick, color = 0, random_color()
 
 
+def update_onscreen_objects():
+    global onscreen_objects
+    onscreen_objects = [o for o in level
+        if all(-o.rect[i + 2] < o.rect[i] - t_offset[i] < DIMS[i] for i in (0, 1))]
+
+
 def main() -> None:
     global offset, look_offset, t_offset, mouse, gravity, gamestate, data, level, player
     global level_num, color, clock, tick, onscreen_objects
@@ -1419,12 +1240,23 @@ def main() -> None:
             player.loop()
             obj_loop()
             obj_interaction()
+            handle_inputs()
             draw()
         elif gamestate == "title":
             title_loop()
 
     pygame.quit()
 
+
+ALL_OBJECTS = {
+    "object": Object,
+    "bouncepad": Bouncepad,
+    "block": Block,
+    "unstable": Unstable,
+    "moving": Moving,
+    "item": Item,
+    "lock": Lock,
+}
 
 if __name__ == "__main__":
     main()
